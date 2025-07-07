@@ -21,6 +21,7 @@ interface LocationState {
   selectedAttributes?: Record<string, boolean>;
   selectedCountry?: string;
   entities?: string[];
+  userPrompt?: string;
 }
 
 export function Analyze() {
@@ -39,6 +40,7 @@ export function Analyze() {
       ...state,
       files: state?.files?.map(f => f.name),
       cloudFiles: state?.cloudFiles,
+      userPrompt: state?.userPrompt,
     }, null, 2));
 
     const {
@@ -50,7 +52,8 @@ export function Analyze() {
       cloudPlatform,
       selectedCountry,
       entities: stateEntities,
-      selectedAttributes, // Add this
+      selectedAttributes,
+      userPrompt,
     } = state || {};
 
     if (!processType || (!files && !cloudFiles)) {
@@ -81,6 +84,13 @@ export function Analyze() {
       return;
     }
 
+    if (processType === 'classification' && (!stateEntities?.length && !userPrompt)) {
+      console.error('Analyze.tsx: No entities or user prompt provided for classification');
+      toast.error('Please select at least one attribute or provide a user prompt for classification', { duration: 3000 });
+      navigate('/dashboard', { state });
+      return;
+    }
+
     const selectedOption = processType === 'classification' ? 'Classification' : 'PanicsTablesExtraction';
 
     // Use stateEntities if available, else compute from selectedAttributes
@@ -91,13 +101,7 @@ export function Analyze() {
       : []);
 
     console.log('Analyze.tsx: Entities sent to backend:', entities);
-
-    if (!entities.length && selectedOption === 'Classification') {
-      console.error('Analyze.tsx: No entities selected for classification');
-      toast.error('No entities selected for analysis', { duration: 3000 });
-      navigate('/dashboard', { state });
-      return;
-    }
+    console.log('Analyze.tsx: User prompt sent to backend:', userPrompt || 'none');
 
     const entityMap: Record<string, string> = {
       creditCard: 'CREDIT_CARD',
@@ -157,7 +161,8 @@ export function Analyze() {
         const formData = new FormData();
         formData.append('selectedOption', selectedOption);
         if (selectedCountry) formData.append('country', selectedCountry);
-        entities.forEach(entity => formData.append('multiple', entity));
+        entities.forEach(entity => formData.append('multiple[]', entity));
+        if (userPrompt) formData.append('user_prompt', userPrompt);
 
         if (processingLocation === 'local' && files) {
           files.forEach(file => formData.append('files', file));
@@ -189,10 +194,11 @@ export function Analyze() {
             processingLocation,
             files: files ? files.map(f => ({ name: f.name })) : [],
             cloudFiles,
-            selectedAttributes, // Now defined
+            selectedAttributes,
             cloudConfig,
             cloudPlatform,
             selectedCountry,
+            userPrompt,
           };
           console.log('Analyze.tsx: Navigating to /results with state:', JSON.stringify({
             ...navigateState,

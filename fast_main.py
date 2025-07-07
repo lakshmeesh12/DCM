@@ -29,6 +29,8 @@ from typing import List
 from TemporaryStoringClasses import NeededInformation
 from parse_pii import needed_information
 from google_drive import GoogleDriveClient
+from llm import LLMEntityDetector
+from concurrent.futures import ThreadPoolExecutor
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -198,6 +200,7 @@ def extractedDataFrame(entities, user_option):
         dataFrame["Needed Information"] = dataFrame["text"].apply(lambda text: safe_extract(text, entities))
         dataFrame.reset_index(inplace=True, drop=True)
         setGetDataframe.set_dataframe(dataFrame)
+        
         return {
             "status": "success",
             "data": {
@@ -332,22 +335,45 @@ def map_ui_entities_to_detector_entities(ui_entities):
 async def displayExtractedResults(
     selectedOption: str = Form(...),
     country: str = Form(None),
-    multiple: List[str] = Form(None)
+    multiple: list[str] = Form(default=[]),
+    categoryMapping: str = Form(None),
+    user_prompt: str = Form(None)
 ):
     try:
+        # Log raw form data for debugging
+        print(f"Received form data: selectedOption={selectedOption}, country={country}, multiple={multiple}, categoryMapping={categoryMapping}, user_prompt={user_prompt}")
+
+        # Initialize ReadFiles and LLMEntityDetector
+        read_files = ReadFiles()
+        llm_detector = LLMEntityDetector()
+
+        # Parse category mapping if provided
+        category_mapping = {}
+        if categoryMapping:
+            try:
+                category_mapping = json.loads(categoryMapping)
+                if not isinstance(category_mapping, dict):
+                    raise ValueError("categoryMapping must be a JSON object")
+            except json.JSONDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "status": "error",
+                        "message": "Invalid categoryMapping: must be a valid JSON object"
+                    }
+                )
+
+        # List files in temporary directory
+        current_dir = os.path.join("..", common.temp_folder)
+        files = [f for f in os.listdir(current_dir) if not f.startswith('~$')]
+        paths = [os.path.join(current_dir, f) for f in files]
+        print(f"Paths to process: {paths}")
+
+        # Determine entities to detect
         entities = multiple if multiple else []
-        if entities:
-            entities = map_ui_entities_to_detector_entities(entities)
-        
-        selected.set_(entities)
+        print(f"Initial entities from multiple: {entities}")
 
-        # Clear previous DataFrames
-        empty_df = pd.DataFrame()
-        setGetDataframe.set_dataframe(empty_df)
-        setGetStreamingDataframe.set_stream_dataframe(empty_df)
-
-        # Filter entities by country if provided and no entities specified
-        if country and not entities:
+        if not entities and country:
             country = country.capitalize()
             if country in common.country_entities:
                 entities = common.global_entities + common.country_entities[country]
@@ -362,87 +388,77 @@ async def displayExtractedResults(
         elif not entities:
             entities = common.entities_list
 
-        print("Received entities:", entities)
+        print(f"Entities to detect: {entities}")
 
-        # Create a comprehensive list including all custom entities
-        all_possible_entities = [
-            'CREDIT_CARD', 'CRYPTO', 'DATE_TIME', 'EMAIL_ADDRESS', 'IBAN_CODE', 'IP_ADDRESS', 
-            'NRP', 'LOCATION', 'PERSON', 'PHONE_NUMBER', 'MEDICAL_LICENSE', 'URL', 'IN_PAN', 
-            'IN_AADHAR', 'IN_AADHAAR', 'IN_VEHICLE_REGISTRATION', 'IN_VOTER', 'IN_PASSPORT', 'IN_PHONE_NUMBER', 
-            'IN_CREDIT_CARD', 'IN_GST_NUMBER', 'IN_UPI_ID', 'IN_BANK_ACCOUNT', 'IN_IFSC_CODE', 
-            'IN_DRIVING_LICENSE', 'IN_AADHAR_CARD_CUSTOM', 'IN_PASSPORT_CUSTOM', 
-            'IN_VEHICLE_REGISTRATION_CUSTOM', 'IN_VOTER_ID_CUSTOM', 'IBAN_CODE_CUSTOM', 
-            'CRYPTO_CUSTOM', 'MEDICAL_LICENSE_CUSTOM', 'IN_PAN_CUSTOM'
-        ]
-        
-        # Use requested entities if specified, otherwise use all
-        final_entities = entities if entities else all_possible_entities
-        
-        print("Final Entities:", final_entities)
-        selected.set_(final_entities)
-        
-        # Add debugging to check if GST is being processed
-        if 'IN_GST_NUMBER' in final_entities:
-            print("GST NUMBER entity is included in final entities")
-        
-        result = extractedDataFrame(entities=final_entities, user_option=selectedOption)
-        print("extractedDataFrame result:", result)
-        
-        if result.get("status") != "success":
-            raise HTTPException(
-                status_code=500,
-                detail={"status": "error", "message": result.get("message", "Unknown error")}
-            )
+        # Validate entities
+        if not isinstance(entities, list) or entities is None:
+            print(f"Error: entities is invalid: {entities}")
+            entities = []
+            print("Fallback to empty entities list")
 
-        if selectedOption == "TablesExtraction":
-            CURRENT_DIR = os.getcwd()
-            images_dir = os.path.join(CURRENT_DIR, "images")
-            csv_files = [
-                os.path.join(images_dir, file_name)
-                for file_name in os.listdir(images_dir)
-                if file_name.lower().endswith(('.xlsx', '.xls'))
-            ]
-            return JSONResponse({
+        # Process files in parallel
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(
+                lambda path: (os.path.basename(path), read_files.file_reader(path)),
+                paths
+            ))
+
+        # Create DataFrame from results
+        dataFrame = pd.DataFrame(results, columns=["File Name", "text"])
+        
+        # Log extracted text for debugging
+        for _, row in dataFrame.iterrows():
+            print(f"Extracted text from {row['File Name']} (first 200 chars): {row['text'][:200]}")
+            if len(row['text']) > 200:
+                print(f"Full extracted text length: {len(row['text'])} chars")
+
+        # Filter out empty text rows
+        dataFrame = dataFrame[dataFrame["text"] != ""]
+        dataFrame.reset_index(inplace=True, drop=True)
+
+        if dataFrame.empty:
+            print("No valid files found with text content: ", paths)
+            return {
                 "status": "success",
-                "message": "Table extraction completed",
-                "csv_file_paths": csv_files
-            })
-
-        df = pd.DataFrame(result["data"]["extracted"])
-        print("DataFrame from extracted:", df.to_dict(orient='records'))
-        records = df.to_dict(orient='records')
-        parse_pii = ParsePii()
-        final_json = parse_pii.categorize_pii_fields(records)
-        print("categorize_pii_fields result:", final_json)
-
-        # Store final_json in NeededInformation for access in mark_files
-        needed_information.set_needed_information(final_json)
-
-        message = "output truncated" if df.shape[0] > 15 else ""
-        return JSONResponse({
-            "status": "success",
-            "data": final_json,
-            "message": message,
-            "table": df.head(15).to_dict(orient='records'),
-            "country": country or "Not specified",
-            "entities_used": final_entities,
-            "styles": {
-                "primary_color": "#F87171",
-                "secondary_color": "#FBBF24"
+                "data": []
             }
-        })
+
+        # Detect and categorize entities in extracted text
+        dataFrame["entities"] = dataFrame.apply(
+            lambda row: llm_detector.detect_entities(row["text"], entities, category_mapping, row["File Name"], user_prompt),
+            axis=1
+        )
+
+        # Prepare response: filter empty entities and add has_pii
+        response_data = []
+        for _, row in dataFrame.iterrows():
+            file_data = {
+                "File Name": row["File Name"],
+                "entities": {
+                    category: {
+                        entity: values for entity, values in entities.items() if values
+                    } for category, entities in row["entities"].items() if any(values for values in entities.values())
+                }
+            }
+            file_data["has_pii"] = "yes" if any(
+                values for category in file_data["entities"].values() for values in category.values()
+            ) else "no"
+            response_data.append(file_data)
+
+        return {
+            "status": "success",
+            "data": response_data
+        }
+
     except Exception as e:
-        print("Error in /success:", traceback.format_exc())
+        print(f"Error in /success: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "error",
-                "message": str(e),
-                "country": country or "Not specified",
-                "entities_used": final_entities if 'final_entities' in locals() else entities
+                "message": str(e)
             }
         )
-
 
 @app.post("/getting_files_from_aws_s3")
 async def GettingFilesFromAWSS3(

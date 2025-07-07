@@ -8,9 +8,11 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import { FileUploader } from './FileUploader';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
+import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
 import { initializeUpload, uploadFiles, connectGoogleDrive, fetchGoogleDriveFiles, streamGoogleDriveFiles, CloudConfigData } from '@/api/api';
 
 interface FileItem {
@@ -118,17 +120,18 @@ const cloudInfo: Record<string, { name: string; fields: string[]; logo: string; 
 // Define categorized entities (default mapping)
 const categorizedEntities = {
   CONFIDENTIAL: [
-    'CREDIT_CARD', 'CRYPTO', 'EMAIL_ADDRESS', 'IBAN_CODE', 'MEDICAL_LICENSE',
+    'CREDIT_CARD', 'CRYPTO', 'IBAN_CODE', 'MEDICAL_LICENSE',
     'US_BANK_NUMBER', 'US_DRIVER_LICENSE', 'US_ITIN', 'US_PASSPORT', 'US_SSN',
     'UK_NHS', 'UK_NINO', 'ES_NIF', 'ES_NIE', 'IT_FISCAL_CODE', 'IT_DRIVER_LICENSE',
     'IT_VAT_CODE', 'IT_PASSPORT', 'IT_IDENTITY_CARD', 'PL_PESEL', 'SG_NRIC_FIN',
     'SG_UEN', 'AU_ABN', 'AU_ACN', 'AU_TFN', 'AU_MEDICARE', 'IN_PAN', 'IN_AADHAR',
-    'IN_VEHICLE_REGISTRATION', 'IN_VOTER', 'IN_PASSPORT', 'FI_PERSONAL_IDENTITY_CODE',
-    'IN_CREDIT_CARD', 'IN_GST_NUMBER', 'IN_UPI_ID', 'IN_BANK_ACCOUNT', 'IN_IFSC_CODE',
-    'IN_DRIVING_LICENSE', 'IN_PHONE_NUMBER'
+    'IN_VEHICLE_REGISTRATION', 'IN_VOTER', 'IN_PASSPORT', 'IN_CREDIT_CARD',
+    'IN_GST_NUMBER', 'IN_UPI_ID', 'IN_BANK_ACCOUNT', 'IN_IFSC_CODE', 'IN_DRIVING_LICENSE',
+    'FI_PERSONAL_IDENTITY_CODE'
   ],
-  PRIVATE: ['DATE_TIME', 'LOCATION', 'PERSON', 'PHONE_NUMBER'],
-  RESTRICTED: ['NRP', 'URL', 'IP_ADDRESS'],
+  PRIVATE: ['DATE_TIME', 'LOCATION', 'PERSON', 'PHONE_NUMBER', 'IN_PHONE_NUMBER'],
+  RESTRICTED: ['EMAIL_ADDRESS', 'NRP', 'URL', 'IP_ADDRESS'],
+  OTHER: []
 };
 
 interface LocationState {
@@ -171,41 +174,102 @@ export function ProcessFlow() {
     azure: false,
     google: false,
   });
+  const [userPrompt, setUserPrompt] = useState<string>('');
 
-  // Initialize displayed categorized entities based on selected attributes
+  // Initialize displayed categorized entities and category mapping
   const [displayedCategorizedEntities, setDisplayedCategorizedEntities] = useState({
     CONFIDENTIAL: [] as string[],
     PRIVATE: [] as string[],
     RESTRICTED: [] as string[],
+    OTHER: [] as string[]
   });
+  const [customCategoryMapping, setCustomCategoryMapping] = useState<Record<string, string>>({});
 
-  // Update displayed categorized entities when selectedAttributes change
+  // Initialize category mapping and displayed entities
   useEffect(() => {
+    const initialSelectedAttributes: Record<string, boolean> = {};
+    if (Object.keys(selectedAttributes).length === 0) {
+      globalEntities.forEach(attr => {
+        if (attr.id !== 'all') {
+          initialSelectedAttributes[attr.id] = false;
+        }
+      });
+      Object.values(countryEntities).flat().forEach(attr => {
+        initialSelectedAttributes[attr.id] = false;
+      });
+      initialSelectedAttributes.creditCard = true;
+      console.log('ProcessFlow.tsx: Initialized selectedAttributes:', initialSelectedAttributes);
+      setSelectedAttributes(initialSelectedAttributes);
+    }
+
+    // Initialize customCategoryMapping and displayedCategorizedEntities
     const newDisplayed = {
       CONFIDENTIAL: [] as string[],
       PRIVATE: [] as string[],
       RESTRICTED: [] as string[],
+      OTHER: [] as string[]
     };
+    const newCategoryMapping: Record<string, string> = {};
 
-    Object.keys(selectedAttributes).forEach(attrId => {
-      if (selectedAttributes[attrId]) {
-        const entity = [...globalEntities, ...Object.values(countryEntities).flat()].find(
-          attr => attr.id === attrId
-        )?.value;
-        if (entity) {
-          if (categorizedEntities.CONFIDENTIAL.includes(entity)) {
-            newDisplayed.CONFIDENTIAL.push(entity);
-          } else if (categorizedEntities.PRIVATE.includes(entity)) {
-            newDisplayed.PRIVATE.push(entity);
-          } else if (categorizedEntities.RESTRICTED.includes(entity)) {
-            newDisplayed.RESTRICTED.push(entity);
-          }
-        }
+    // Map all possible entities to their default categories
+    [...globalEntities.filter(attr => attr.id !== 'all'), ...Object.values(countryEntities).flat()].forEach(attr => {
+      const entity = attr.value;
+      const category = 
+        categorizedEntities.CONFIDENTIAL.includes(entity) ? 'CONFIDENTIAL' :
+        categorizedEntities.PRIVATE.includes(entity) ? 'PRIVATE' :
+        categorizedEntities.RESTRICTED.includes(entity) ? 'RESTRICTED' : 'OTHER';
+      newCategoryMapping[entity] = category;
+      if (selectedAttributes[attr.id]) {
+        newDisplayed[category].push(entity);
       }
     });
 
     setDisplayedCategorizedEntities(newDisplayed);
+    setCustomCategoryMapping(newCategoryMapping);
+    console.log('ProcessFlow.tsx: Initial customCategoryMapping:', JSON.stringify(newCategoryMapping, null, 2));
+    console.log('ProcessFlow.tsx: Initial displayedCategorizedEntities:', JSON.stringify(newDisplayed, null, 2));
   }, [selectedAttributes]);
+
+  // Handle drag-and-drop
+  const onDragEnd = (result: DropResult) => {
+    const { source, destination } = result;
+    if (!destination) return;
+
+    const sourceCategory = source.droppableId as keyof typeof displayedCategorizedEntities;
+    const destCategory = destination.droppableId as keyof typeof displayedCategorizedEntities;
+    if (sourceCategory === destCategory) return;
+
+    const entity = displayedCategorizedEntities[sourceCategory][source.index];
+
+    // Only allow dragging if the entity is selected
+    const isSelected = Object.keys(selectedAttributes).some(
+      attrId => selectedAttributes[attrId] && [...globalEntities, ...Object.values(countryEntities).flat()].find(
+        attr => attr.id === attrId
+      )?.value === entity
+    );
+
+    if (!isSelected) {
+      toast.error('Cannot move unselected entity', { duration: 2000 });
+      return;
+    }
+
+    setDisplayedCategorizedEntities(prev => {
+      const newDisplayed = { ...prev };
+      newDisplayed[sourceCategory] = prev[sourceCategory].filter((_, i) => i !== source.index);
+      newDisplayed[destCategory] = [...prev[destCategory], entity];
+      return newDisplayed;
+    });
+
+    setCustomCategoryMapping(prev => ({
+      ...prev,
+      [entity]: destCategory
+    }));
+
+    console.log(`ProcessFlow.tsx: Moved ${entity} to ${destCategory}`);
+    console.log('ProcessFlow.tsx: Updated customCategoryMapping:', JSON.stringify({ ...customCategoryMapping, [entity]: destCategory }, null, 2));
+    console.log('ProcessFlow.tsx: Updated displayedCategorizedEntities:', JSON.stringify(displayedCategorizedEntities, null, 2));
+    toast.success(`Moved ${getEntityLabel(entity)} to ${destCategory}`, { duration: 2000 });
+  };
 
   const checkGoogleDriveAuth = async () => {
     setIsFetching(true);
@@ -246,20 +310,6 @@ export function ProcessFlow() {
   }, [processingLocation, cloudPlatform]);
 
   useEffect(() => {
-    const initialState: Record<string, boolean> = {};
-    if (Object.keys(selectedAttributes).length === 0) {
-      globalEntities.forEach(attr => {
-        if (attr.id !== 'all') {
-          initialState[attr.id] = false;
-        }
-      });
-      Object.values(countryEntities).flat().forEach(attr => {
-        initialState[attr.id] = false;
-      });
-      initialState.creditCard = true;
-      console.log('ProcessFlow.tsx: Initialized selectedAttributes:', initialState);
-      setSelectedAttributes(initialState);
-    }
     if (state?.selectedCountry) {
       console.log('ProcessFlow.tsx: Restoring selectedCountry from state:', state.selectedCountry);
       setSelectedCountry(state.selectedCountry);
@@ -484,31 +534,74 @@ export function ProcessFlow() {
     console.log('ProcessFlow.tsx: selectedAttributes before analyze:', selectedAttributes);
     console.log('ProcessFlow.tsx: Entities computed:', entities);
     console.log('ProcessFlow.tsx: selectedCountry:', selectedCountry);
+    console.log('ProcessFlow.tsx: Category mapping:', JSON.stringify(customCategoryMapping, null, 2));
+    console.log('ProcessFlow.tsx: User prompt:', userPrompt);
 
-    if (entities.length === 0) {
-      toast.error('Please select at least one attribute for classification', { duration: 2000 });
+    if (entities.length === 0 && !userPrompt.trim()) {
+      toast.error('Please select at least one attribute or provide a user prompt for classification', { duration: 2000 });
       return;
     }
 
     setShowBuffering(true);
 
     try {
-      const navigationState = {
-        processType,
-        processingLocation,
-        files,
-        cloudPlatform,
-        cloudConfig,
+      // Prepare form data for backend
+      const formData = new FormData();
+      formData.append('selectedOption', processType);
+      if (selectedCountry) formData.append('country', selectedCountry);
+      if (entities.length > 0) {
+        entities.forEach(entity => formData.append('multiple[]', entity));
+      } else {
+        formData.append('multiple[]', ''); // Ensure empty multiple[] is sent
+      }
+      formData.append('categoryMapping', JSON.stringify(customCategoryMapping));
+      if (userPrompt.trim()) formData.append('user_prompt', userPrompt.trim());
+
+      if (processingLocation === 'local') {
+        files.forEach(file => formData.append('files', file));
+      } else {
+        formData.append('cloudFiles', JSON.stringify(cloudFiles));
+        formData.append('cloudConfig', JSON.stringify(cloudConfig));
+        formData.append('cloudPlatform', cloudPlatform.toLowerCase());
+      }
+
+      // Log form data for debugging
+      console.log('ProcessFlow.tsx: Sending form data:', {
+        selectedOption: processType,
+        country: selectedCountry,
+        multiple: entities,
+        categoryMapping: customCategoryMapping,
+        user_prompt: userPrompt,
+        files: files.map(f => f.name),
         cloudFiles,
-        selectedAttributes,
-        selectedCountry,
-        entities,
-        categorizedEntities: displayedCategorizedEntities, // Pass categorized entities for analysis
-      };
-      console.log('ProcessFlow.tsx: Navigation state for classification:', JSON.stringify(navigationState, null, 2));
-      toast.success('Content analysis started', { duration: 2000 });
-      navigate('/analyze', { state: navigationState });
+        cloudPlatform
+      });
+
+      const result = await initializeUpload(formData);
+      console.log('ProcessFlow.tsx: Initialize upload response:', result);
+
+      if (result.status === 'success') {
+        const navigationState = {
+          processType,
+          processingLocation,
+          files,
+          cloudPlatform,
+          cloudConfig,
+          cloudFiles,
+          selectedAttributes,
+          selectedCountry,
+          entities,
+          categoryMapping: customCategoryMapping,
+          userPrompt
+        };
+        console.log('ProcessFlow.tsx: Navigation state for classification:', JSON.stringify(navigationState, null, 2));
+        toast.success('Content analysis started', { duration: 2000 });
+        navigate('/analyze', { state: navigationState });
+      } else {
+        toast.error(result.message || 'Failed to initialize upload', { duration: 2000 });
+      }
     } catch (error) {
+      console.error('ProcessFlow.tsx: Analyze error:', error);
       toast.error('Error navigating to analysis: ' + ((error as Error).message || 'Unknown error'), { duration: 2000 });
     } finally {
       setShowBuffering(false);
@@ -531,83 +624,42 @@ export function ProcessFlow() {
     return value.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); // Fallback: format value as readable label
   };
 
-  // Handle drag-and-drop to move entities between categories
-  const handleDrop = (entity: string, targetCategory: string) => {
-    // Only allow dragging if the entity is selected
-    const isSelected = Object.keys(selectedAttributes).some(
-      attrId => selectedAttributes[attrId] && [...globalEntities, ...Object.values(countryEntities).flat()].find(
-        attr => attr.id === attrId
-      )?.value === entity
-    );
-
-    if (!isSelected) {
-      toast.error('Cannot move unselected entity', { duration: 2000 });
-      return;
-    }
-
-    setDisplayedCategorizedEntities(prev => {
-      const newDisplayed = {
-        CONFIDENTIAL: [...prev.CONFIDENTIAL],
-        PRIVATE: [...prev.PRIVATE],
-        RESTRICTED: [...prev.RESTRICTED],
-      };
-
-      // Remove entity from its current category
-      Object.keys(newDisplayed).forEach(category => {
-        newDisplayed[category] = newDisplayed[category].filter(e => e !== entity);
-      });
-
-      // Add entity to the target category
-      newDisplayed[targetCategory].push(entity);
-
-      return newDisplayed;
-    });
-
-    console.log(`Moved ${entity} to ${targetCategory}`);
-    toast.success(`Moved ${getEntityLabel(entity)} to ${targetCategory}`, { duration: 2000 });
-  };
-
-  // Render categorized entities
+  // Render categorized entities with drag-and-drop
   const renderCategorizedEntities = (category: string, entities: string[]) => (
-    <div
-      className={`border rounded-lg p-3 bg-${category.toLowerCase()}-50 transition-all duration-200 ${
-        category === 'CONFIDENTIAL' ? 'bg-red-50' : category === 'PRIVATE' ? 'bg-yellow-50' : 'bg-blue-50'
-      }`}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.currentTarget.classList.add('border-dashed', 'border-gray-400');
-      }}
-      onDragLeave={(e) => {
-        e.currentTarget.classList.remove('border-dashed', 'border-gray-400');
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.currentTarget.classList.remove('border-dashed', 'border-gray-400');
-        const entity = e.dataTransfer.getData('text/plain');
-        handleDrop(entity, category);
-      }}
-    >
-      <h4 className="text-sm font-semibold mb-2">{category}</h4>
-      <div className="flex flex-wrap gap-2">
-        {entities.length > 0 ? (
-          entities.map(entity => (
-            <div
-              key={entity}
-              className="px-2 py-1 bg-accent/20 border rounded-full text-xs font-medium cursor-move shadow-sm hover:bg-accent/30 transition-colors"
-              draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData('text/plain', entity);
-                console.log(`Dragging ${entity}`);
-              }}
-            >
-              {getEntityLabel(entity)}
-            </div>
-          ))
-        ) : (
-          <p className="text-xs text-muted-foreground">No entities selected</p>
-        )}
-      </div>
-    </div>
+    <Droppable droppableId={category}>
+      {(provided) => (
+        <div
+          className={`border rounded-lg p-3 bg-${category.toLowerCase()}-50 transition-all duration-200 ${
+            category === 'CONFIDENTIAL' ? 'bg-red-50' : category === 'PRIVATE' ? 'bg-yellow-50' : category === 'RESTRICTED' ? 'bg-blue-50' : 'bg-gray-50'
+          }`}
+          ref={provided.innerRef}
+          {...provided.droppableProps}
+        >
+          <h4 className="text-sm font-semibold mb-2">{category}</h4>
+          <div className="flex flex-wrap gap-2">
+            {entities.length > 0 ? (
+              entities.map((entity, index) => (
+                <Draggable key={entity} draggableId={entity} index={index}>
+                  {(provided) => (
+                    <div
+                      ref={provided.innerRef}
+                      {...provided.draggableProps}
+                      {...provided.dragHandleProps}
+                      className="px-2 py-1 bg-accent/20 border rounded-full text-xs font-medium cursor-move shadow-sm hover:bg-accent/30 transition-colors"
+                    >
+                      {getEntityLabel(entity)}
+                    </div>
+                  )}
+                </Draggable>
+              ))
+            ) : (
+              <p className="text-xs text-muted-foreground">No entities selected</p>
+            )}
+            {provided.placeholder}
+          </div>
+        </div>
+      )}
+    </Droppable>
   );
 
   return (
@@ -763,7 +815,6 @@ export function ProcessFlow() {
                             </Button>
                           )}
                         </div>
-
                       ) : (
                         <>
                           <ul className="text-sm space-y-1">
@@ -816,107 +867,128 @@ export function ProcessFlow() {
             </TabsContent>
 
             <TabsContent value="process" className="space-y-6">
-              <div className="grid md:grid-cols-2 gap-6">
-                <div className="space-y-4">
-                  <div className="bg-accent/50 p-3 rounded-md">
-                    <h3 className="text-sm font-semibold mb-2">Processing Configuration</h3>
-                    <dl className="text-xs space-y-1">
-                      <div className="flex justify-between">
-                        <dt>Process Type:</dt>
-                        <dd>Data Classification + Chatbot</dd>
-                      </div>
-                      <div className="flex justify-between">
-                        <dt>Location:</dt>
-                        <dd className="capitalize">{processingLocation}</dd>
-                      </div>
-                      {processingLocation === 'cloud' && (
+              <DragDropContext onDragEnd={onDragEnd}>
+                <div className="grid md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <div className="bg-accent/50 p-3 rounded-md">
+                      <h3 className="text-sm font-semibold mb-2">Processing Configuration</h3>
+                      <dl className="text-xs space-y-1">
                         <div className="flex justify-between">
-                          <dt>Platform:</dt>
-                          <dd>{cloudInfo[cloudPlatform].name}</dd>
+                          <dt>Process Type:</dt>
+                          <dd>Data Classification + Chatbot</dd>
                         </div>
-                      )}
-                      <div className="flex justify-between">
-                        <dt>Files:</dt>
-                        <dd>{processingLocation === 'local' ? files.length : cloudFiles.length}</dd>
+                        <div className="flex justify-between">
+                          <dt>Location:</dt>
+                          <dd className="capitalize">{processingLocation}</dd>
+                        </div>
+                        {processingLocation === 'cloud' && (
+                          <div className="flex justify-between">
+                            <dt>Platform:</dt>
+                            <dd>{cloudInfo[cloudPlatform].name}</dd>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <dt>Files:</dt>
+                          <dd>{processingLocation === 'local' ? files.length : cloudFiles.length}</dd>
+                        </div>
+                      </dl>
+                    </div>
+
+                    <div className="bg-accent/50 p-3 rounded-md">
+                      <h3 className="text-sm font-semibold mb-2">Custom Query</h3>
+                      <Label htmlFor="userPrompt" className="text-sm font-medium">
+                        Enter your query (e.g., "find all vehicle related information")
+                      </Label>
+                      <Input
+                        id="userPrompt"
+                        value={userPrompt}
+                        onChange={(e) => setUserPrompt(e.target.value)}
+                        placeholder="Type your query here..."
+                        className="mt-2 w-full border rounded-md p-2 text-sm"
+                        aria-describedby="userPromptDescription"
+                      />
+                      <p id="userPromptDescription" className="text-xs text-muted-foreground mt-1">
+                        Specify what information to extract from the files, or leave blank to detect selected entities.
+                      </p>
+                    </div>
+
+                    <div>
+                      <h3 className="text-lg font-medium mb-2">Categorized Entities</h3>
+                      <div className="space-y-3">
+                        {renderCategorizedEntities('CONFIDENTIAL', displayedCategorizedEntities.CONFIDENTIAL)}
+                        {renderCategorizedEntities('PRIVATE', displayedCategorizedEntities.PRIVATE)}
+                        {renderCategorizedEntities('RESTRICTED', displayedCategorizedEntities.RESTRICTED)}
+                        {renderCategorizedEntities('OTHER', displayedCategorizedEntities.OTHER)}
                       </div>
-                    </dl>
+                    </div>
                   </div>
 
                   <div>
-                    <h3 className="text-lg font-medium mb-2">Categorized Entities</h3>
-                    <div className="space-y-3">
-                      {renderCategorizedEntities('CONFIDENTIAL', displayedCategorizedEntities.CONFIDENTIAL)}
-                      {renderCategorizedEntities('PRIVATE', displayedCategorizedEntities.PRIVATE)}
-                      {renderCategorizedEntities('RESTRICTED', displayedCategorizedEntities.RESTRICTED)}
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className="text-lg font-medium mb-3">Select Attributes to Detect</h3>
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-md font-medium mb-2">Global Entities</h4>
-                      <div className="space-y-2">
-                        <div className="flex items-center space-x-2 pb-2 border-b">
-                          <Checkbox
-                            id="all"
-                            checked={
-                              globalEntities
-                                .filter(attr => attr.id !== 'all')
-                                .every(attr => selectedAttributes[attr.id] === true) &&
-                              (!selectedCountry ||
-                                countryEntities[selectedCountry]?.every(attr => selectedAttributes[attr.id] === true))
-                            }
-                            onCheckedChange={(checked) => handleAttributeChange('all', checked === true)}
-                          />
-                          <Label htmlFor="all" className="text-sm font-medium">All</Label>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 mt-3">
-                          {globalEntities.filter(attr => attr.id !== 'all').map((attribute) => (
-                            <div key={attribute.id} className="flex items-center space-x-2">
-                              <Checkbox
-                                id={attribute.id}
-                                checked={selectedAttributes[attribute.id] || false}
-                                onCheckedChange={(checked) => handleAttributeChange(attribute.id, checked === true)}
-                              />
-                              <Label htmlFor={attribute.id} className="text-sm font-medium">{attribute.label}</Label>
-                            </div>
-                          ))}
+                    <h3 className="text-lg font-medium mb-3">Select Attributes to Detect</h3>
+                    <div className="space-y-4">
+                      <div>
+                        <h4 className="text-md font-medium mb-2">Global Entities</h4>
+                        <div className="space-y-2">
+                          <div className="flex items-center space-x-2 pb-2 border-b">
+                            <Checkbox
+                              id="all"
+                              checked={
+                                globalEntities
+                                  .filter(attr => attr.id !== 'all')
+                                  .every(attr => selectedAttributes[attr.id] === true) &&
+                                (!selectedCountry ||
+                                  countryEntities[selectedCountry]?.every(attr => selectedAttributes[attr.id] === true))
+                              }
+                              onCheckedChange={(checked) => handleAttributeChange('all', checked === true)}
+                            />
+                            <Label htmlFor="all" className="text-sm font-medium">All</Label>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 mt-3">
+                            {globalEntities.filter(attr => attr.id !== 'all').map((attribute) => (
+                              <div key={attribute.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={attribute.id}
+                                  checked={selectedAttributes[attribute.id] || false}
+                                  onCheckedChange={(checked) => handleAttributeChange(attribute.id, checked === true)}
+                                />
+                                <Label htmlFor={attribute.id} className="text-sm font-medium">{attribute.label}</Label>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div>
-                      <h4 className="text-md font-medium mb-2">Country-Specific Entities</h4>
-                      <Select onValueChange={handleCountryChange} value={selectedCountry}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a country" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {Object.keys(countryEntities).map((country) => (
-                            <SelectItem key={country} value={country}>{country}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {selectedCountry && (
-                        <div className="grid grid-cols-2 gap-2 mt-3">
-                          {countryEntities[selectedCountry].map((attribute) => (
-                            <div key={attribute.id} className="flex items-center space-x-2">
-                              <Checkbox
-                                id={attribute.id}
-                                checked={selectedAttributes[attribute.id] || false}
-                                onCheckedChange={(checked) => handleAttributeChange(attribute.id, checked === true)}
-                              />
-                              <Label htmlFor={attribute.id} className="text-sm font-medium">{attribute.label}</Label>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <div>
+                        <h4 className="text-md font-medium mb-2">Country-Specific Entities</h4>
+                        <Select onValueChange={handleCountryChange} value={selectedCountry}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select a country" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {Object.keys(countryEntities).map((country) => (
+                              <SelectItem key={country} value={country}>{country}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {selectedCountry && (
+                          <div className="grid grid-cols-2 gap-2 mt-3">
+                            {countryEntities[selectedCountry].map((attribute) => (
+                              <div key={attribute.id} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={attribute.id}
+                                  checked={selectedAttributes[attribute.id] || false}
+                                  onCheckedChange={(checked) => handleAttributeChange(attribute.id, checked === true)}
+                                />
+                                <Label htmlFor={attribute.id} className="text-sm font-medium">{attribute.label}</Label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              </DragDropContext>
 
               <div className="flex justify-between">
                 <Button variant="outline" onClick={() => setSelectedTab('upload')}>
