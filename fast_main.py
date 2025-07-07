@@ -335,13 +335,24 @@ def map_ui_entities_to_detector_entities(ui_entities):
 async def displayExtractedResults(
     selectedOption: str = Form(...),
     country: str = Form(None),
-    multiple: list[str] = Form(default=[]),
+    multiple: str = Form(default='[]'),  # Change to string to handle JSON
     categoryMapping: str = Form(None),
     user_prompt: str = Form(None)
 ):
     try:
         # Log raw form data for debugging
         print(f"Received form data: selectedOption={selectedOption}, country={country}, multiple={multiple}, categoryMapping={categoryMapping}, user_prompt={user_prompt}")
+
+        # Parse multiple as JSON
+        try:
+            entities = json.loads(multiple) if multiple else []
+            if not isinstance(entities, list):
+                raise ValueError("multiple must be a JSON array of strings")
+            entities = [str(entity) for entity in entities if entity]  # Ensure strings and filter empty
+        except json.JSONDecodeError:
+            print("Error parsing multiple as JSON, falling back to empty list")
+            entities = []
+        print(f"Parsed entities from multiple: {entities}")
 
         # Initialize ReadFiles and LLMEntityDetector
         read_files = ReadFiles()
@@ -369,11 +380,8 @@ async def displayExtractedResults(
         paths = [os.path.join(current_dir, f) for f in files]
         print(f"Paths to process: {paths}")
 
-        # Determine entities to detect
-        entities = multiple if multiple else []
-        print(f"Initial entities from multiple: {entities}")
-
-        if not entities and country:
+        # Use selected entities if provided; otherwise, use default entities if no user prompt
+        if not entities and not user_prompt and country:
             country = country.capitalize()
             if country in common.country_entities:
                 entities = common.global_entities + common.country_entities[country]
@@ -385,7 +393,7 @@ async def displayExtractedResults(
                         "message": f"Invalid country: {country}. Supported countries: {list(common.country_entities.keys())}"
                     }
                 )
-        elif not entities:
+        elif not entities and not user_prompt:
             entities = common.entities_list
 
         print(f"Entities to detect: {entities}")
@@ -459,7 +467,6 @@ async def displayExtractedResults(
                 "message": str(e)
             }
         )
-
 @app.post("/getting_files_from_aws_s3")
 async def GettingFilesFromAWSS3(
     bucket: str = Form(...),
