@@ -102,104 +102,163 @@ export default function Results() {
   const [selectedExcelData, setSelectedExcelData] = useState<string[][] | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string>('');
 
-  useEffect(() => {
-    console.log('Results.tsx: Raw location.state:', JSON.stringify({
-      ...state,
-      files: files.map((f: any) => f.name || 'Unknown'),
-      cloudFiles,
-      analysisResult: {
-        ...analysisResult,
-        data: analysisResult.data ? '[Data]' : 'undefined',
-        csv_file_paths: analysisResult.csv_file_paths || 'undefined',
-      },
-      categoryMapping,
-      userPrompt,
-    }, null, 2));
+  // Entity mapping for user-friendly display names
+const entityDisplayNames: Record<string, string> = {
+  // Global entities
+  CREDIT_CARD: 'Credit Card Number',
+  CRYPTO: 'Cryptocurrency Address',
+  DATE_TIME: 'Date and Time',
+  EMAIL_ADDRESS: 'Email Address',
+  IBAN_CODE: 'IBAN Code',
+  IP_ADDRESS: 'IP Address',
+  NRP: 'National Registration Number',
+  LOCATION: 'Location',
+  PERSON: 'Person Name',
+  PHONE_NUMBER: 'Phone Number',
+  MEDICAL_LICENSE: 'Medical License Number',
+  URL: 'Website URL',
+  US_BANK_NUMBER: 'US Bank Number',
+  US_DRIVER_LICENSE: 'US Driver License',
+  US_ITIN: 'US ITIN',
+  US_PASSPORT: 'US Passport Number',
+  US_SSN: 'US Social Security Number',
+  UK_NHS: 'UK NHS Number',
+  UK_NINO: 'UK National Insurance Number',
+  ES_NIF: 'Spanish NIF',
+  ES_NIE: 'Spanish NIE',
+  IT_FISCAL_CODE: 'Italian Fiscal Code',
+  IT_DRIVER_LICENSE: 'Italian Driver License',
+  IT_VAT_CODE: 'Italian VAT Code',
+  IT_PASSPORT: 'Italian Passport Number',
+  IT_IDENTITY_CARD: 'Italian Identity Card',
+  PL_PESEL: 'Polish PESEL',
+  SG_NRIC_FIN: 'Singapore NRIC/FIN',
+  SG_UEN: 'Singapore UEN',
+  AU_ABN: 'Australian Business Number',
+  AU_ACN: 'Australian Company Number',
+  AU_TFN: 'Australian Tax File Number',
+  AU_MEDICARE: 'Australian Medicare Number',
+  FI_PERSONAL_IDENTITY_CODE: 'Finnish Personal Identity Code',
+  // India-specific entities
+  IN_PAN: 'PAN Number',
+  IN_AADHAR: 'Aadhar Number',
+  IN_VEHICLE_REGISTRATION: 'Vehicle Registration Number',
+  IN_VOTER: 'Voter ID',
+  IN_PASSPORT: 'Indian Passport Number',
+  IN_PHONE_NUMBER: 'Indian Phone Number',
+  IN_CREDIT_CARD: 'Indian Credit Card Number',
+  IN_AADHAR_CARD_CUSTOM: 'Custom Aadhar Number',
+  IN_PASSPORT_CUSTOM: 'Custom Indian Passport Number',
+  IN_VEHICLE_REGISTRATION_CUSTOM: 'Custom Vehicle Registration Number',
+  IN_VOTER_ID_CUSTOM: 'Custom Voter ID',
+  IN_PAN_CUSTOM: 'Custom PAN Number',
+  IN_GST_NUMBER: 'GST Number',
+  IN_UPI_ID: 'UPI ID',
+  IN_BANK_ACCOUNT: 'Bank Account Number',
+  IN_IFSC_CODE: 'IFSC Code',
+  IN_DRIVING_LICENSE: 'Indian Driving License',
+};
 
-    if (analysisResult.status !== 'success') {
-      console.error('Results.tsx: Invalid analysisResult status');
-      toast.error('Failed to load analysis results', { duration: 2000 });
+// Updated useEffect to apply user-friendly entity names
+useEffect(() => {
+  console.log('Results.tsx: Raw location.state:', JSON.stringify({
+    ...state,
+    files: files.map((f: any) => f.name || 'Unknown'),
+    cloudFiles,
+    analysisResult: {
+      ...analysisResult,
+      data: analysisResult.data ? '[Data]' : 'undefined',
+      csv_file_paths: analysisResult.csv_file_paths || 'undefined',
+    },
+    categoryMapping,
+    userPrompt,
+  }, null, 2));
+
+  if (analysisResult.status !== 'success') {
+    console.error('Results.tsx: Invalid analysisResult status');
+    toast.error('Failed to load analysis results', { duration: 2000 });
+    return;
+  }
+
+  if (processType === 'classification') {
+    if (!analysisResult.data || !Array.isArray(analysisResult.data)) {
+      console.error('Results.tsx: Invalid analysisResult data for classification');
+      toast.error('Failed to load classification results', { duration: 2000 });
       return;
     }
 
-    if (processType === 'classification') {
-      if (!analysisResult.data || !Array.isArray(analysisResult.data)) {
-        console.error('Results.tsx: Invalid analysisResult data for classification');
-        toast.error('Failed to load classification results', { duration: 2000 });
-        return;
+    const fileNames = processingLocation === 'cloud'
+      ? cloudFiles.map((f: { name: string }) => f.name)
+      : files.map((f: any, index: number) => f.name || `File_${index + 1}`);
+
+    const mappedResults = analysisResult.data.map((item: any, index: number) => {
+      const fileName = item['File Name'] || item.file_name || fileNames[index] || `File_${index + 1}`;
+      const hasPii = item.has_pii === 'yes' || item.has_pii === true || (item.entities && Object.keys(item.entities).length > 0);
+
+      const categoriesData: Categories = {
+        Confidential: [],
+        Private: [],
+        Restricted: [],
+        Other: [],
+      };
+
+      // Store all entities in a flat structure
+      const allEntities: CategoryEntity[] = [];
+
+      if (item.entities) {
+        Object.entries(item.entities).forEach(([category, entities]: [string, any]) => {
+          const normalizedCategory = category.charAt(0).toUpperCase() + category.slice(1).toLowerCase() as keyof Categories;
+
+          if (entities && typeof entities === 'object') {
+            Object.entries(entities).forEach(([entityType, values]: [string, any]) => {
+              const entityValues = Array.isArray(values) ? values : [];
+              const displayEntityType = entityDisplayNames[entityType] || entityType; // Use display name
+              const entityObj: CategoryEntity = {
+                count: entityValues.length,
+                entity_type: displayEntityType, // Store display name
+                values: entityValues,
+              };
+
+              // Add to all entities
+              allEntities.push(entityObj);
+
+              // Add to specific category
+              if (categories.includes(normalizedCategory)) {
+                categoriesData[normalizedCategory].push(entityObj);
+              } else {
+                // Map entities to categories using categoryMapping or default to 'Other'
+                const mappedCategory = categoryMapping[entityType] || 'Other';
+                categoriesData[mappedCategory as keyof Categories].push(entityObj);
+              }
+            });
+          }
+        });
       }
 
-      const fileNames = processingLocation === 'cloud'
-        ? cloudFiles.map((f: { name: string }) => f.name)
-        : files.map((f: any, index: number) => f.name || `File_${index + 1}`);
+      const result: ClassificationResult = {
+        id: index + 1,
+        fileName,
+        hasPii,
+        category: hasPii ? 'Confidential' : '', // Default category
+        categoriesData,
+        allEntities,
+      };
 
-      const mappedResults = analysisResult.data.map((item: any, index: number) => {
-        const fileName = item['File Name'] || item.file_name || fileNames[index] || `File_${index + 1}`;
-        const hasPii = item.has_pii === 'yes' || item.has_pii === true || (item.entities && Object.keys(item.entities).length > 0);
+      console.log(`Results.tsx: Mapped classification result for ${fileName}:`, JSON.stringify(result, null, 2));
+      return result;
+    });
 
-        const categoriesData: Categories = {
-          Confidential: [],
-          Private: [],
-          Restricted: [],
-          Other: [],
-        };
-
-        // Store all entities in a flat structure
-        const allEntities: CategoryEntity[] = [];
-
-        if (item.entities) {
-          Object.entries(item.entities).forEach(([category, entities]: [string, any]) => {
-            const normalizedCategory = category.charAt(0).toUpperCase() + category.slice(1).toLowerCase() as keyof Categories;
-            
-            if (entities && typeof entities === 'object') {
-              Object.entries(entities).forEach(([entityType, values]: [string, any]) => {
-                const entityValues = Array.isArray(values) ? values : [];
-                const entityObj: CategoryEntity = {
-                  count: entityValues.length,
-                  entity_type: entityType,
-                  values: entityValues,
-                };
-
-                // Add to all entities
-                allEntities.push(entityObj);
-
-                // Add to specific category
-                if (categories.includes(normalizedCategory)) {
-                  categoriesData[normalizedCategory].push(entityObj);
-                } else {
-                  // Map entities to categories using categoryMapping or default to 'Other'
-                  const mappedCategory = categoryMapping[entityType] || 'Other';
-                  categoriesData[mappedCategory as keyof Categories].push(entityObj);
-                }
-              });
-            }
-          });
-        }
-
-        const result: ClassificationResult = {
-          id: index + 1,
-          fileName,
-          hasPii,
-          category: hasPii ? 'Confidential' : '', // Default category
-          categoriesData,
-          allEntities,
-        };
-
-        console.log(`Results.tsx: Mapped classification result for ${fileName}:`, JSON.stringify(result, null, 2));
-        return result;
-      });
-
-      if (mappedResults.length === 0) {
-        console.warn('Results.tsx: mappedResults is empty');
-        toast.warning('No classification results to display', { duration: 2000 });
-      } else if (mappedResults.every(result => !result.hasPii)) {
-        console.warn('Results.tsx: All classification results have hasPii: false');
-        toast.warning('No PII detected', { duration: 2000 });
-      }
-
-      setClassificationResults(mappedResults);
+    if (mappedResults.length === 0) {
+      console.warn('Results.tsx: mappedResults is empty');
+      toast.warning('No classification results to display', { duration: 2000 });
+    } else if (mappedResults.every(result => !result.hasPii)) {
+      console.warn('Results.tsx: All classification results have hasPii: false');
+      toast.warning('No PII detected', { duration: 2000 });
     }
-  }, [analysisResult, files, cloudFiles, processingLocation, selectedCountry, processType, categoryMapping, userPrompt]);
+
+    setClassificationResults(mappedResults);
+  }
+}, [analysisResult, files, cloudFiles, processingLocation, selectedCountry, processType, categoryMapping, userPrompt]);
 
   const handleCategoryChange = (resultId: number, newCategory: string) => {
     console.log(`Results.tsx: Changing category for result ID ${resultId} to ${newCategory}`);
@@ -220,20 +279,15 @@ export default function Results() {
 
   const getEntitiesForCategory = (result: ClassificationResult, category: string): CategoryEntity[] => {
     if (!category) return [];
-    
-    // First try to get entities from the specific category
+
+    // Get entities from the specific category
     const categoryEntities = result.categoriesData[category as keyof Categories] || [];
-    
-    // If no entities found in the specific category, you might want to show all entities
-    // or entities that could belong to that category based on your business logic
+
+    // If no entities found in the specific category, show all entities
     if (categoryEntities.length === 0) {
-      // Option 1: Show all entities regardless of category
       return result.allEntities;
-      
-      // Option 2: Return empty array (current behavior)
-      // return [];
     }
-    
+
     return categoryEntities;
   };
 
