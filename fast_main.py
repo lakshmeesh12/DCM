@@ -31,6 +31,7 @@ from parse_pii import needed_information
 from google_drive import GoogleDriveClient
 from llm import LLMEntityDetector
 from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -50,6 +51,7 @@ currFolder = common.temp_folder
 ALLOWED_EXTENSIONS = common.allowed_extensions
 
 # Existing storage objects
+needed_information = NeededInformation()
 selected = SetGetSelectedEntities()
 setGetBucketName = SetGetAWSDetails()
 setGetAzureDetails = SetGetAzureDetails()
@@ -235,12 +237,13 @@ async def download_file(file_name: str):
     return FileResponse(path=file_path, filename=file_name, media_type=media_type)
 
 @app.post('/mark_document')
-def mark_files(file_name: str = Form(...)):
+async def mark_files(file_name: str = Form(...)):
     print("In Marking File...")
     try:
         # Retrieve final_json from NeededInformation
         final_json = needed_information.get_needed_information()
         if not final_json:
+            print("No PII data available in needed_information")
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -249,22 +252,50 @@ def mark_files(file_name: str = Form(...)):
                 }
             )
 
-        file_extension = file_name.split(".")[-1].lower()
+        # Ensure final_json is a list
+        if not isinstance(final_json, list):
+            print(f"Invalid final_json structure: {final_json}")
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "status": "error",
+                    "message": "Invalid PII data structure. Expected a list."
+                }
+            )
+
+        # Find the file in final_json
         for entity in final_json:
-            if entity['File Name'] == file_name:
-                watermark_text = ""
-                print(entity.keys(), entity["Categories"], entity["File Name"])
-                if len(entity["Categories"]["Confidential"]) > 2:
-                    watermark_text = "Confidential"
-                elif len(entity["Categories"]["Private"]) > 2:
-                    watermark_text = "Private"
-                elif len(entity["Categories"]["Restricted"]):
-                    watermark_text = "Restricted"
-                else:
+            if entity.get('File Name') == file_name:
+                # Access entities dictionary safely
+                entities = entity.get('entities', {})
+                if not entities:
+                    print(f"No entities found for {file_name}")
                     watermark_text = "Public"
+                else:
+                    # Count entities in each category (case-sensitive keys from /success)
+                    confidential_count = sum(len(values) for values in entities.get('CONFIDENTIAL', {}).values())
+                    private_count = sum(len(values) for values in entities.get('PRIVATE', {}).values())
+                    restricted_count = sum(len(values) for values in entities.get('RESTRICTED', {}).values())
+                    
+                    # Debug logging
+                    print(f"Entity counts for {file_name}: CONFIDENTIAL={confidential_count}, PRIVATE={private_count}, RESTRICTED={restricted_count}")
+
+                    # Determine watermark based on entity counts
+                    if confidential_count > 2:
+                        watermark_text = "Confidential"
+                    elif private_count > 2:
+                        watermark_text = "Private"
+                    elif restricted_count > 0:
+                        watermark_text = "Restricted"
+                    else:
+                        watermark_text = "Public"
+
+                print(f"File: {file_name}, Watermark: {watermark_text}, Entities: {entities}")
 
                 output_watermark_file_path = ""
                 output_header_file_path = ""
+                file_extension = file_name.split(".")[-1].lower()
+
                 if file_extension == 'pdf':
                     print("File Extension is PDF...")
                     output_watermark_file_path = add_watermark_pdf(file_name, watermark_text=watermark_text)
@@ -284,7 +315,8 @@ def mark_files(file_name: str = Form(...)):
                     "header_path": output_header_file_path,
                     "watermark_path": output_watermark_file_path,
                 }
-        
+
+        print(f"File {file_name} not found in final_json")
         raise HTTPException(
             status_code=404,
             detail={
@@ -292,6 +324,7 @@ def mark_files(file_name: str = Form(...)):
                 "message": f"File {file_name} not found in PII data."
             }
         )
+
     except Exception as e:
         print(f"Error in /mark_document: {traceback.format_exc()}")
         raise HTTPException(
@@ -335,7 +368,7 @@ def map_ui_entities_to_detector_entities(ui_entities):
 async def displayExtractedResults(
     selectedOption: str = Form(...),
     country: str = Form(None),
-    multiple: str = Form(default='[]'),  # Change to string to handle JSON
+    multiple: str = Form(default='[]'),
     categoryMapping: str = Form(None),
     user_prompt: str = Form(None)
 ):
@@ -353,10 +386,6 @@ async def displayExtractedResults(
             print("Error parsing multiple as JSON, falling back to empty list")
             entities = []
         print(f"Parsed entities from multiple: {entities}")
-
-        # Initialize ReadFiles and LLMEntityDetector
-        read_files = ReadFiles()
-        llm_detector = LLMEntityDetector()
 
         # Parse category mapping if provided
         category_mapping = {}
@@ -404,16 +433,21 @@ async def displayExtractedResults(
             entities = []
             print("Fallback to empty entities list")
 
-        # Process files in parallel
-        with ThreadPoolExecutor() as executor:
-            results = list(executor.map(
-                lambda path: (os.path.basename(path), read_files.file_reader(path)),
-                paths
-            ))
+        # Initialize ReadFiles with more OCR instances for better performance
+        read_files = ReadFiles(max_ocr_instances=8)
+        llm_detector = LLMEntityDetector()
+
+        # Process files asynchronously for text extraction
+        print("Starting file processing...")
+        results = await read_files.file_reader(paths)
+        print(f"File processing completed. Extracted text from {len(results)} files.")
 
         # Create DataFrame from results
-        dataFrame = pd.DataFrame(results, columns=["File Name", "text"])
-        
+        dataFrame = pd.DataFrame([
+            {"File Name": file_name, "text": text}
+            for file_name, text in results.items()
+        ])
+
         # Log extracted text for debugging
         for _, row in dataFrame.iterrows():
             print(f"Extracted text from {row['File Name']} (first 200 chars): {row['text'][:200]}")
@@ -431,27 +465,70 @@ async def displayExtractedResults(
                 "data": []
             }
 
-        # Detect and categorize entities in extracted text
-        dataFrame["entities"] = dataFrame.apply(
-            lambda row: llm_detector.detect_entities(row["text"], entities, category_mapping, row["File Name"], user_prompt),
-            axis=1
-        )
+        # Optimize entity detection with more workers and async processing
+        print("Starting entity detection...")
+        with ThreadPoolExecutor(max_workers=min(len(dataFrame), os.cpu_count() * 2)) as executor:
+            # Prepare arguments for detect_entities
+            detect_args = [
+                (row["text"], entities, category_mapping, row["File Name"], user_prompt)
+                for _, row in dataFrame.iterrows()
+            ]
+            
+            # Use async approach for better performance
+            loop = asyncio.get_event_loop()
+            entity_detection_tasks = [
+                loop.run_in_executor(executor, lambda args=args: llm_detector.detect_entities(*args))
+                for args in detect_args
+            ]
+            
+            # Wait for all entity detection to complete
+            entity_results = await asyncio.gather(*entity_detection_tasks, return_exceptions=True)
+            
+            # Create entities column and handle results
+            entities_column = []
+            for i, result in enumerate(entity_results):
+                if isinstance(result, Exception):
+                    print(f"Error in entity detection for file {dataFrame.iloc[i]['File Name']}: {result}")
+                    entities_column.append({})
+                else:
+                    entities_column.append(result)
+            
+            # Add entities column to DataFrame
+            dataFrame["entities"] = entities_column
 
-        # Prepare response: filter empty entities and add has_pii
+        print("Entity detection completed.")
+
+        # Prepare response: filter empty entities, deduplicate values, and add has_pii
         response_data = []
         for _, row in dataFrame.iterrows():
+            if 'entities' not in row or row['entities'] is None or not isinstance(row['entities'], dict):
+                continue
+                
+            # Deduplicate values for each entity
+            deduplicated_entities = {}
+            for category, entities in row['entities'].items():
+                if isinstance(entities, dict):
+                    deduplicated_entities[category] = {
+                        entity: list(set(values))  # Remove duplicates by converting to set and back to list
+                        for entity, values in entities.items() if values
+                    }
+            
             file_data = {
                 "File Name": row["File Name"],
                 "entities": {
-                    category: {
-                        entity: values for entity, values in entities.items() if values
-                    } for category, entities in row["entities"].items() if any(values for values in entities.values())
+                    category: entities for category, entities in deduplicated_entities.items()
+                    if entities and any(values for values in entities.values())
                 }
             }
             file_data["has_pii"] = "yes" if any(
-                values for category in file_data["entities"].values() for values in category.values()
+                values for category in file_data["entities"].values() 
+                for values in category.values() if values
             ) else "no"
             response_data.append(file_data)
+
+        # Store the response data in needed_information for use by /mark_document
+        needed_information.set_needed_information(response_data)
+        print(f"Stored {len(response_data)} files data in needed_information")
 
         return {
             "status": "success",
@@ -467,6 +544,7 @@ async def displayExtractedResults(
                 "message": str(e)
             }
         )
+    
 @app.post("/getting_files_from_aws_s3")
 async def GettingFilesFromAWSS3(
     bucket: str = Form(...),
@@ -779,7 +857,7 @@ def get_files_from_google_drive(data: GoogleDriveFolder):
         return_result = [
             {"name": file["name"], "id": file["id"]}
             for file in result
-            if file["name"].lower().endswith((".pdf", ".doc", ".docx", ".jpeg", ".png", ".csv", ".xlsx"))
+            if file["name"].lower().endswith((".pdf", ".doc", ".docx", ".jpeg", ".png", ".csv", ".xlsx", ".jpg"))
         ]
         return {
             "message": f"{len(return_result)} Files Names Successfully Retrieved..",

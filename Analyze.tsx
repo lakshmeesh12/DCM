@@ -36,220 +36,247 @@ export function Analyze() {
   const estimatedDuration = 15000;
 
   useEffect(() => {
-    console.log('Analyze.tsx: Received state:', JSON.stringify({
-      ...state,
-      files: state?.files?.map(f => f.name),
-      cloudFiles: state?.cloudFiles,
-      userPrompt: state?.userPrompt,
-    }, null, 2));
+  console.log('Analyze.tsx: Received state:', JSON.stringify({
+    ...state,
+    files: state?.files?.map(f => f.name),
+    cloudFiles: state?.cloudFiles,
+    userPrompt: state?.userPrompt,
+    categoryMapping: state?.categoryMapping,
+  }, null, 2));
 
-    const {
-      processType,
-      files,
-      cloudFiles,
-      processingLocation,
-      cloudConfig,
-      cloudPlatform,
-      selectedCountry,
-      entities: stateEntities,
-      selectedAttributes,
-      userPrompt,
-    } = state || {};
+  const {
+    processType,
+    files,
+    cloudFiles,
+    processingLocation,
+    cloudConfig,
+    cloudPlatform,
+    selectedCountry,
+    entities: stateEntities,
+    selectedAttributes,
+    userPrompt,
+    categoryMapping,
+  } = state || {};
 
-    if (!processType || (!files && !cloudFiles)) {
-      console.error('Analyze.tsx: Missing required state');
-      toast.error('Invalid analysis configuration', { duration: 3000 });
-      navigate('/dashboard', { state });
-      return;
-    }
+  if (!processType || (!files && !cloudFiles)) {
+    console.error('Analyze.tsx: Missing required state');
+    toast.error('Invalid analysis configuration', { duration: 3000 });
+    navigate('/dashboard', { state });
+    return;
+  }
 
-    if (processingLocation === 'local' && (!files || files.length === 0)) {
-      console.error('Analyze.tsx: No local files provided');
-      toast.error('No files selected for analysis', { duration: 3000 });
-      navigate('/dashboard', { state });
-      return;
-    }
+  if (processingLocation === 'local' && (!files || files.length === 0)) {
+    console.error('Analyze.tsx: No local files provided');
+    toast.error('No files selected for analysis', { duration: 3000 });
+    navigate('/dashboard', { state });
+    return;
+  }
 
-    if (processingLocation === 'cloud' && (!cloudFiles || cloudFiles.length === 0)) {
-      console.error('Analyze.tsx: No cloud files provided');
-      toast.error('No cloud files selected for analysis', { duration: 3000 });
-      navigate('/dashboard', { state });
-      return;
-    }
+  if (processingLocation === 'cloud' && (!cloudFiles || cloudFiles.length === 0)) {
+    console.error('Analyze.tsx: No cloud files provided');
+    toast.error('No cloud files selected for analysis', { duration: 3000 });
+    navigate('/dashboard', { state });
+    return;
+  }
 
-    if (processingLocation === 'cloud' && !cloudConfig) {
-      console.error('Analyze.tsx: Missing cloudConfig for cloud processing');
-      toast.error('Cloud configuration missing', { duration: 3000 });
-      navigate('/dashboard', { state });
-      return;
-    }
+  if (processingLocation === 'cloud' && !cloudConfig) {
+    console.error('Analyze.tsx: Missing cloudConfig for cloud processing');
+    toast.error('Cloud configuration missing', { duration: 3000 });
+    navigate('/dashboard', { state });
+    return;
+  }
 
-    if (processType === 'classification' && (!stateEntities?.length && !userPrompt)) {
-      console.error('Analyze.tsx: No entities or user prompt provided for classification');
-      toast.error('Please select at least one attribute or provide a user prompt for classification', { duration: 3000 });
-      navigate('/dashboard', { state });
-      return;
-    }
+  if (processType === 'classification' && (!stateEntities?.length && !selectedAttributes && !userPrompt)) {
+    console.error('Analyze.tsx: No entities, selectedAttributes, or user prompt provided for classification');
+    toast.error('Please select at least one attribute or provide a user prompt for classification', { duration: 3000 });
+    navigate('/dashboard', { state });
+    return;
+  }
 
-    const selectedOption = processType === 'classification' ? 'Classification' : 'PanicsTablesExtraction';
+  if (processType === 'classification' && (!categoryMapping || Object.keys(categoryMapping).length === 0)) {
+    console.error('Analyze.tsx: Missing or empty categoryMapping');
+    toast.error('Category mapping is required for classification', { duration: 3000 });
+    navigate('/dashboard', { state });
+    return;
+  }
 
-    // Use stateEntities if available, else compute from selectedAttributes
-    const entities = stateEntities || (processType === 'classification' && selectedAttributes
+  const selectedOption = processType === 'classification' ? 'Classification' : 'PanicsTablesExtraction';
+
+  // Use stateEntities if available, else compute from selectedAttributes
+  const entityMap: Record<string, string> = {
+    creditCard: 'CREDIT_CARD',
+    crypto: 'CRYPTO',
+    dateTime: 'DATE_TIME',
+    email: 'EMAIL_ADDRESS',
+    iban: 'IBAN_CODE',
+    ipAddress: 'IP_ADDRESS',
+    nrp: 'NRP',
+    location: 'LOCATION',
+    person: 'PERSON',
+    phone: 'PHONE_NUMBER',
+    medicalLicense: 'MEDICAL_LICENSE',
+    url: 'URL!',
+    usBankNumber: 'US_BANK_NUMBER',
+    usDriverLicense: 'US_DRIVER_LICENSE',
+    usItin: 'US_ITIN',
+    usPassport: 'US_PASSPORT',
+    usSsn: 'US_SSN',
+    ukNhs: 'UK_NHS',
+    ukNino: 'UK_NINO',
+    esNif: 'ES_NIF',
+    esNie: 'ES_NIE',
+    itFiscalCode: 'IT_FISCAL_CODE',
+    itDriverLicense: 'IT_DRIVER_LICENSE',
+    itVatCode: 'IT_VAT_CODE',
+    itPassport: 'IT_PASSPORT',
+    itIdentityCard: 'IT_IDENTITY_CARD',
+    plPesel: 'PL_PESEL',
+    sgNricFin: 'SG_NRIC_FIN',
+    sgUen: 'SG_UEN',
+    auAbn: 'AU_ABN',
+    auAcn: 'AU_ACN',
+    auTfn: 'AU_TFN',
+    auMedicare: 'AU_MEDICARE',
+    inPan: 'IN_PAN',
+    inAadhar: 'IN_AADHAR',
+    inVehicleRegistration: 'IN_VEHICLE_REGISTRATION',
+    inVoter: 'IN_VOTER',
+    inPassport: 'IN_PASSPORT',
+    inPhoneNumber: 'IN_PHONE_NUMBER',
+    inCreditCard: 'IN_CREDIT_CARD',
+    inAadharCardCustom: 'IN_AADHAR_CARD_CUSTOM',
+    inPassportCustom: 'IN_PASSPORT_CUSTOM',
+    inVehicleRegistrationCustom: 'IN_VEHICLE_REGISTRATION_CUSTOM',
+    inVoterIdCustom: 'IN_VOTER_ID_CUSTOM',
+    inPanCustom: 'IN_PAN_CUSTOM',
+    inGstNumber: 'IN_GST_NUMBER',
+    inUpiId: 'IN_UPI_ID',
+    inBankAccount: 'IN_BANK_ACCOUNT',
+    inIfscCode: 'IN_IFSC_CODE',
+    inDrivingLicense: 'IN_DRIVING_LICENSE',
+    fiPersonalIdentityCode: 'FI_PERSONAL_IDENTITY_CODE',
+  };
+
+  const entities = stateEntities && stateEntities.length > 0
+    ? stateEntities
+    : selectedAttributes
       ? Object.entries(selectedAttributes)
           .filter(([key, value]) => value && entityMap[key])
           .map(([key]) => entityMap[key])
-      : []);
+      : [];
 
-    console.log('Analyze.tsx: Entities sent to backend:', entities);
-    console.log('Analyze.tsx: User prompt sent to backend:', userPrompt || 'none');
+  console.log('Analyze.tsx: Entities sent to backend:', entities);
+  console.log('Analyze.tsx: Selected attributes:', selectedAttributes || 'none');
+  console.log('Analyze.tsx: Category mapping sent to backend:', JSON.stringify(categoryMapping, null, 2));
+  console.log('Analyze.tsx: User prompt sent to backend:', userPrompt || 'none');
 
-    const entityMap: Record<string, string> = {
-      creditCard: 'CREDIT_CARD',
-      crypto: 'CRYPTO',
-      dateTime: 'DATE_TIME',
-      email: 'EMAIL_ADDRESS',
-      iban: 'IBAN_CODE',
-      ipAddress: 'IP_ADDRESS',
-      nrp: 'NRP',
-      location: 'LOCATION',
-      person: 'PERSON',
-      phone: 'PHONE_NUMBER',
-      medicalLicense: 'MEDICAL_LICENSE',
-      url: 'URL',
-      usBankNumber: 'US_BANK_NUMBER',
-      usDriverLicense: 'US_DRIVER_LICENSE',
-      usItin: 'US_ITIN',
-      usPassport: 'US_PASSPORT',
-      usSsn: 'US_SSN',
-      ukNhs: 'UK_NHS',
-      ukNino: 'UK_NINO',
-      esNif: 'ES_NIF',
-      esNie: 'ES_NIE',
-      itFiscalCode: 'IT_FISCAL_CODE',
-      itDriverLicense: 'IT_DRIVER_LICENSE',
-      itVatCode: 'IT_VAT_CODE',
-      itPassport: 'IT_PASSPORT',
-      itIdentityCard: 'IT_IDENTITY_CARD',
-      plPesel: 'PL_PESEL',
-      sgNricFin: 'SG_NRIC_FIN',
-      sgUen: 'SG_UEN',
-      auAbn: 'AU_ABN',
-      auAcn: 'AU_ACN',
-      auTfn: 'AU_TFN',
-      auMedicare: 'AU_MEDICARE',
-      inPan: 'IN_PAN',
-      inAadhar: 'IN_AADHAR',
-      inVehicleRegistration: 'IN_VEHICLE_REGISTRATION',
-      inVoter: 'IN_VOTER',
-      inPassport: 'IN_PASSPORT',
-      inPhoneNumber: 'IN_PHONE_NUMBER',
-      inCreditCard: 'IN_CREDIT_CARD',
-      inGstNumber: 'IN_GST_NUMBER',
-      inUpiId: 'IN_UPI_ID',
-      inBankAccount: 'IN_BANK_ACCOUNT',
-      inIfscCode: 'IN_IFSC_CODE',
-      inDrivingLicense: 'IN_DRIVING_LICENSE',
-      fiPersonalIdentityCode: 'FI_PERSONAL_IDENTITY_CODE',
-    };
+  const analyze = async (signal: AbortSignal) => {
+    try {
+      setTimeout(() => !signal.aborted && setStatusMessage('Uploading files...'), 1000);
+      setTimeout(() => !signal.aborted && setStatusMessage('Analyzing content...'), 5000);
+      setTimeout(() => !signal.aborted && setStatusMessage('Finalizing results...'), 10000);
 
-    const analyze = async (signal: AbortSignal) => {
-      try {
-        setTimeout(() => !signal.aborted && setStatusMessage('Uploading files...'), 1000);
-        setTimeout(() => !signal.aborted && setStatusMessage('Analyzing content...'), 5000);
-        setTimeout(() => !signal.aborted && setStatusMessage('Finalizing results...'), 10000);
+      const formData = new FormData();
+      formData.append('selectedOption', selectedOption);
+      if (selectedCountry) formData.append('country', selectedCountry);
+      formData.append('multiple', JSON.stringify(entities));
+      formData.append('categoryMapping', JSON.stringify(categoryMapping));
+      if (userPrompt) formData.append('user_prompt', userPrompt);
 
-        const formData = new FormData();
-        formData.append('selectedOption', selectedOption);
-        if (selectedCountry) formData.append('country', selectedCountry);
-        entities.forEach(entity => formData.append('multiple[]', entity));
-        if (userPrompt) formData.append('user_prompt', userPrompt);
-
-        if (processingLocation === 'local' && files) {
-          files.forEach(file => formData.append('files', file));
-        } else if (processingLocation === 'cloud' && cloudFiles && cloudConfig) {
-          const cloudFilesJson = JSON.stringify(cloudFiles.map(f => typeof f === 'string' ? { name: f } : f));
-          formData.append('cloudFiles', cloudFilesJson);
-          formData.append('cloudConfig', JSON.stringify(cloudConfig));
-          if (cloudPlatform) formData.append('cloudPlatform', cloudPlatform.toLowerCase());
-        }
-
-        const result = await analyzeContent(formData, { signal });
-        console.log('Analyze.tsx: API response:', JSON.stringify(result, null, 2));
-        console.log('Analyze.tsx: csv_file_paths in response:', result.csv_file_paths || 'undefined');
-
-        if (signal.aborted) {
-          console.log('Analyze.tsx: Analysis cancelled');
-          return;
-        }
-
-        if (result.status === 'success') {
-          if (selectedOption === 'TablesExtraction' && (!result.csv_file_paths || !Array.isArray(result.csv_file_paths) || result.csv_file_paths.length === 0)) {
-            throw new Error('No Excel files generated for table extraction');
-          }
-          setProgress(100);
-          setStatusMessage('Analysis complete!');
-          const navigateState = {
-            analysisResult: result,
-            processType,
-            processingLocation,
-            files: files ? files.map(f => ({ name: f.name })) : [],
-            cloudFiles,
-            selectedAttributes,
-            cloudConfig,
-            cloudPlatform,
-            selectedCountry,
-            userPrompt,
-          };
-          console.log('Analyze.tsx: Navigating to /results with state:', JSON.stringify({
-            ...navigateState,
-            files: navigateState.files.map(f => f.name),
-            analysisResult: {
-              ...navigateState.analysisResult,
-              csv_file_paths: navigateState.analysisResult.csv_file_paths || 'undefined',
-            },
-          }, null, 2));
-          toast.success('Analysis complete!', { duration: 2000 });
-          setTimeout(() => navigate('/results', { state: navigateState }), 500);
-        } else {
-          throw new Error(result.message || 'Invalid analysis result');
-        }
-      } catch (error) {
-        if (signal.aborted) {
-          console.log('Analyze.tsx: Analysis aborted');
-          return;
-        }
-        console.error('Analyze.tsx: Analysis error:', error);
-        const errorMessage = error instanceof Error
-          ? error.message.includes('Failed to fetch')
-            ? 'Network error: Check backend URL or CORS'
-            : error.message
-          : 'Network error occurred';
-        setStatusMessage('Analysis failed');
-        toast.error(`Analysis failed: ${errorMessage}`, { duration: 4000 });
-        navigate('/dashboard', { state });
-      } finally {
-        setIsLoading(false);
+      if (processingLocation === 'local' && files) {
+        files.forEach(file => formData.append('files', file));
+      } else if (processingLocation === 'cloud' && cloudFiles && cloudConfig) {
+        const cloudFilesJson = JSON.stringify(cloudFiles.map(f => typeof f === 'string' ? { name: f } : f));
+        formData.append('cloudFiles', cloudFilesJson);
+        formData.append('cloudConfig', JSON.stringify(cloudConfig));
+        if (cloudPlatform) formData.append('cloudPlatform', cloudPlatform.toLowerCase());
       }
-    };
 
-    const controller = new AbortController();
-    analyze(controller.signal);
+      // Log FormData entries for debugging
+      const formDataEntries: Record<string, any> = {};
+      for (const [key, value] of formData.entries()) {
+        formDataEntries[key] = typeof value === 'string' ? value : '[File/Blob]';
+      }
+      console.log('Analyze.tsx: FormData being sent:', JSON.stringify(formDataEntries, null, 2));
 
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 90 || controller.signal.aborted) {
-          clearInterval(interval);
-          return prev;
+      const result = await analyzeContent(formData, { signal });
+      console.log('Analyze.tsx: API response:', JSON.stringify(result, null, 2));
+      console.log('Analyze.tsx: csv_file_paths in response:', result.csv_file_paths || 'undefined');
+
+      if (signal.aborted) {
+        console.log('Analyze.tsx: Analysis cancelled');
+        return;
+      }
+
+      if (result.status === 'success') {
+        if (selectedOption === 'TablesExtraction' && (!result.csv_file_paths || !Array.isArray(result.csv_file_paths) || result.csv_file_paths.length === 0)) {
+          throw new Error('No Excel files generated for table extraction');
         }
-        return prev + 90 / (estimatedDuration / 100);
-      });
-    }, 100);
+        setProgress(100);
+        setStatusMessage('Analysis complete!');
+        const navigateState = {
+          analysisResult: result,
+          processType,
+          processingLocation,
+          files: files ? files.map(f => ({ name: f.name })) : [],
+          cloudFiles,
+          selectedAttributes,
+          cloudConfig,
+          cloudPlatform,
+          selectedCountry,
+          userPrompt,
+          categoryMapping,
+        };
+        console.log('Analyze.tsx: Navigating to /results with state:', JSON.stringify({
+          ...navigateState,
+          files: navigateState.files.map(f => f.name),
+          analysisResult: {
+            ...navigateState.analysisResult,
+            csv_file_paths: navigateState.analysisResult.csv_file_paths || 'undefined',
+          },
+        }, null, 2));
+        toast.success('Analysis complete!', { duration: 2000 });
+        setTimeout(() => navigate('/results', { state: navigateState }), 500);
+      } else {
+        throw new Error(result.message || 'Invalid analysis result');
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        console.log('Analyze.tsx: Analysis cancelled');
+        return;
+      }
+      console.error('Analyze.tsx: Analysis error:', error);
+      const errorMessage = error instanceof Error
+        ? error.message.includes('Failed to fetch')
+          ? 'Network error: Check backend URL or CORS'
+          : error.message
+        : 'Network error occurred';
+      setStatusMessage('Analysis failed');
+      toast.error(`Analysis failed: ${errorMessage}`, { duration: 4000 });
+      navigate('/dashboard', { state });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-    return () => {
-      controller.abort();
-      clearInterval(interval);
-    };
-  }, [navigate, state]);
+  const controller = new AbortController();
+  analyze(controller.signal);
+
+  const interval = setInterval(() => {
+    setProgress(prev => {
+      if (prev >= 90 || controller.signal.aborted) {
+        clearInterval(interval);
+        return prev;
+      }
+      return prev + 90 / (estimatedDuration / 100);
+    });
+  }, 100);
+
+  return () => {
+    controller.abort();
+    clearInterval(interval);
+  };
+}, [navigate, state]);
 
   const handleCancel = () => {
     setIsCancelled(true);

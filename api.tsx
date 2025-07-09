@@ -99,6 +99,7 @@ export const analyzeContent = async (
   }
   console.log('api.tsx: FormData contents:', JSON.stringify(formDataEntries, null, 2));
   console.log('api.tsx: user_prompt:', formDataEntries['user_prompt'] || 'none');
+  console.log('api.tsx: Raw FormData keys:', Array.from(formData.keys()));
 
   try {
     const response = await axios.post(`${BASE_URL}/success`, formData, {

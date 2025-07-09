@@ -202,7 +202,7 @@ export function ProcessFlow() {
       setSelectedAttributes(initialSelectedAttributes);
     }
 
-    // Initialize customCategoryMapping and displayedCategorizedEntities
+    // Initialize customCategoryMapping and displayedCategorizedEntities based on selectedAttributes
     const newDisplayed = {
       CONFIDENTIAL: [] as string[],
       PRIVATE: [] as string[],
@@ -211,15 +211,16 @@ export function ProcessFlow() {
     };
     const newCategoryMapping: Record<string, string> = {};
 
-    // Map all possible entities to their default categories
-    [...globalEntities.filter(attr => attr.id !== 'all'), ...Object.values(countryEntities).flat()].forEach(attr => {
+    // Map selected entities to their default categories
+    const allEntities = [...globalEntities.filter(attr => attr.id !== 'all'), ...Object.values(countryEntities).flat()];
+    allEntities.forEach(attr => {
       const entity = attr.value;
-      const category = 
-        categorizedEntities.CONFIDENTIAL.includes(entity) ? 'CONFIDENTIAL' :
-        categorizedEntities.PRIVATE.includes(entity) ? 'PRIVATE' :
-        categorizedEntities.RESTRICTED.includes(entity) ? 'RESTRICTED' : 'OTHER';
-      newCategoryMapping[entity] = category;
       if (selectedAttributes[attr.id]) {
+        const category = 
+          categorizedEntities.CONFIDENTIAL.includes(entity) ? 'CONFIDENTIAL' :
+          categorizedEntities.PRIVATE.includes(entity) ? 'PRIVATE' :
+          categorizedEntities.RESTRICTED.includes(entity) ? 'RESTRICTED' : 'OTHER';
+        newCategoryMapping[entity] = category;
         newDisplayed[category].push(entity);
       }
     });
@@ -526,87 +527,95 @@ export function ProcessFlow() {
   };
 
   const handleAnalyze = async () => {
-    const entities = [
-      ...globalEntities.filter(attr => attr.id !== 'all' && selectedAttributes[attr.id]).map(attr => attr.value),
-      ...(selectedCountry ? countryEntities[selectedCountry]?.filter(attr => selectedAttributes[attr.id]).map(attr => attr.value) || [] : []),
-    ];
+  const entities = [
+    ...globalEntities.filter(attr => attr.id !== 'all' && selectedAttributes[attr.id]).map(attr => attr.value),
+    ...(selectedCountry ? countryEntities[selectedCountry]?.filter(attr => selectedAttributes[attr.id]).map(attr => attr.value) || [] : []),
+  ];
 
-    console.log('ProcessFlow.tsx: selectedAttributes before analyze:', selectedAttributes);
-    console.log('ProcessFlow.tsx: Entities computed:', entities);
-    console.log('ProcessFlow.tsx: selectedCountry:', selectedCountry);
-    console.log('ProcessFlow.tsx: Category mapping:', JSON.stringify(customCategoryMapping, null, 2));
-    console.log('ProcessFlow.tsx: User prompt:', userPrompt);
+  console.log('ProcessFlow.tsx: selectedAttributes before analyze:', selectedAttributes);
+  console.log('ProcessFlow.tsx: Entities computed:', entities);
+  console.log('ProcessFlow.tsx: selectedCountry:', selectedCountry);
+  console.log('ProcessFlow.tsx: Category mapping:', JSON.stringify(customCategoryMapping, null, 2));
+  console.log('ProcessFlow.tsx: User prompt:', userPrompt);
 
-    if (entities.length === 0 && !userPrompt.trim()) {
-      toast.error('Please select at least one attribute or provide a user prompt for classification', { duration: 2000 });
-      return;
+  if (entities.length === 0 && !userPrompt.trim()) {
+    toast.error('Please select at least one attribute or provide a user prompt for classification', { duration: 2000 });
+    return;
+  }
+
+  // Validate categoryMapping
+  if (entities.length > 0 && Object.keys(customCategoryMapping).length === 0) {
+    console.error('ProcessFlow.tsx: categoryMapping is empty for selected entities');
+    toast.error('Category mapping is missing for selected entities', { duration: 2000 });
+    return;
+  }
+
+  // Ensure all selected entities have a category mapping
+  const missingEntities = entities.filter(entity => !customCategoryMapping[entity]);
+  if (missingEntities.length > 0) {
+    console.error('ProcessFlow.tsx: Missing category mappings for entities:', missingEntities);
+    toast.error(`Missing category mappings for: ${missingEntities.map(getEntityLabel).join(', ')}`, { duration: 2000 });
+    return;
+  }
+
+  setShowBuffering(true);
+
+  try {
+    // Prepare form data for backend
+    const formData = new FormData();
+    formData.append('selectedOption', processType);
+    if (selectedCountry) formData.append('country', selectedCountry);
+    formData.append('multiple', JSON.stringify(entities)); // Use JSON string for multiple
+    formData.append('categoryMapping', JSON.stringify(customCategoryMapping));
+    if (userPrompt.trim()) formData.append('user_prompt', userPrompt.trim());
+
+    if (processingLocation === 'local') {
+      files.forEach(file => formData.append('files', file));
+    } else {
+      formData.append('cloudFiles', JSON.stringify(cloudFiles));
+      formData.append('cloudConfig', JSON.stringify(cloudConfig));
+      formData.append('cloudPlatform', cloudPlatform.toLowerCase());
     }
 
-    setShowBuffering(true);
+    // Log form data for debugging
+    const formDataEntries: Record<string, any> = {};
+    for (const [key, value] of formData.entries()) {
+      formDataEntries[key] = typeof value === 'string' ? value : '[File/Blob]';
+    }
+    console.log('ProcessFlow.tsx: FormData being sent:', JSON.stringify(formDataEntries, null, 2));
 
-    try {
-      // Prepare form data for backend
-      const formData = new FormData();
-      formData.append('selectedOption', processType);
-      if (selectedCountry) formData.append('country', selectedCountry);
-      if (entities.length > 0) {
-        entities.forEach(entity => formData.append('multiple[]', entity));
-      } else {
-        formData.append('multiple[]', ''); // Ensure empty multiple[] is sent
-      }
-      formData.append('categoryMapping', JSON.stringify(customCategoryMapping));
-      if (userPrompt.trim()) formData.append('user_prompt', userPrompt.trim());
+    const result = await initializeUpload(formData);
+    console.log('ProcessFlow.tsx: Initialize upload response:', result);
 
-      if (processingLocation === 'local') {
-        files.forEach(file => formData.append('files', file));
-      } else {
-        formData.append('cloudFiles', JSON.stringify(cloudFiles));
-        formData.append('cloudConfig', JSON.stringify(cloudConfig));
-        formData.append('cloudPlatform', cloudPlatform.toLowerCase());
-      }
-
-      // Log form data for debugging
-      console.log('ProcessFlow.tsx: Sending form data:', {
-        selectedOption: processType,
-        country: selectedCountry,
-        multiple: entities,
-        categoryMapping: customCategoryMapping,
-        user_prompt: userPrompt,
-        files: files.map(f => f.name),
+    if (result.status === 'success') {
+      const navigationState = {
+        processType,
+        processingLocation,
+        files,
+        cloudPlatform,
+        cloudConfig,
         cloudFiles,
-        cloudPlatform
-      });
-
-      const result = await initializeUpload(formData);
-      console.log('ProcessFlow.tsx: Initialize upload response:', result);
-
-      if (result.status === 'success') {
-        const navigationState = {
-          processType,
-          processingLocation,
-          files,
-          cloudPlatform,
-          cloudConfig,
-          cloudFiles,
-          selectedAttributes,
-          selectedCountry,
-          entities,
-          categoryMapping: customCategoryMapping,
-          userPrompt
-        };
-        console.log('ProcessFlow.tsx: Navigation state for classification:', JSON.stringify(navigationState, null, 2));
-        toast.success('Content analysis started', { duration: 2000 });
-        navigate('/analyze', { state: navigationState });
-      } else {
-        toast.error(result.message || 'Failed to initialize upload', { duration: 2000 });
-      }
-    } catch (error) {
-      console.error('ProcessFlow.tsx: Analyze error:', error);
-      toast.error('Error navigating to analysis: ' + ((error as Error).message || 'Unknown error'), { duration: 2000 });
-    } finally {
-      setShowBuffering(false);
+        selectedAttributes,
+        selectedCountry,
+        entities,
+        categoryMapping: customCategoryMapping,
+        userPrompt
+      };
+      console.log('ProcessFlow.tsx: Navigation state for classification:', JSON.stringify(navigationState, null, 2));
+      toast.success('Content analysis started', { duration: 2000 });
+      navigate('/analyze', { state: navigationState });
+    } else {
+      toast.error(result.message || 'Failed to initialize upload', { duration: 2000 });
     }
-  };
+  } catch (error) {
+    console.error('ProcessFlow.tsx: Analyze error:', error);
+    toast.error('Error navigating to analysis: ' + ((error as Error).message || 'Unknown error'), { duration: 2000 });
+  } finally {
+    setShowBuffering(false);
+  }
+};
+
+// No changes needed for onDragEnd, as it correctly updates customCategoryMapping
 
   const handleLogoError = (platform: string) => {
     console.error(`Failed to load logo for ${cloudInfo[platform].name}`);
@@ -899,12 +908,18 @@ export function ProcessFlow() {
                       <Label htmlFor="userPrompt" className="text-sm font-medium">
                         Enter your query (e.g., "find all vehicle related information")
                       </Label>
-                      <Input
+                      <textarea
                         id="userPrompt"
                         value={userPrompt}
                         onChange={(e) => setUserPrompt(e.target.value)}
                         placeholder="Type your query here..."
-                        className="mt-2 w-full border rounded-md p-2 text-sm"
+                        className="mt-2 w-full border rounded-md p-2 text-sm resize-none overflow-hidden"
+                        style={{ minHeight: '40px', maxHeight: '200px' }}
+                        onInput={(e) => {
+                          const target = e.target as HTMLTextAreaElement;
+                          target.style.height = 'auto'; // Reset height to recalculate
+                          target.style.height = `${Math.min(target.scrollHeight, 200)}px`; // Set height to content or max 200px
+                        }}
                         aria-describedby="userPromptDescription"
                       />
                       <p id="userPromptDescription" className="text-xs text-muted-foreground mt-1">
